@@ -1,0 +1,199 @@
+#include "HyperDisplay_4DLCD-320240_4WSPI.h"  // Include the library for the 320x240 LCD screen
+#include "SparkFun_MicroMod_Button.h"         // Include the library for the MicroMod button
+#include <SPI.h>                               // Include the SPI library
+#include <SdFat.h>                             // Include the SD card and FAT filesystem library
+#include <Adafruit_ImageReader.h>              // Include the library for reading images
+#include "protocol.h"                          // Include the protocol library for communication
+
+
+// Pin definitions
+#define PWM_PIN PWM0     // Define the PWM pin for the LCD screen
+#define CS_PIN D0        // Define the chip select pin for SPI communication
+#define DC_PIN D1        // Define the data/command pin for SPI communication
+#define SPI_PORT SPI     // Define the SPI port to be used
+#define SPI_SPEED 32000000  // Define the SPI speed (in Hz)
+
+LCD320240_4WSPI display;  // Creates an object of the display graphics and text
+
+ILI9341_color_16_t defaultColor;  // Defines a variable for the default color to be used on the display
+
+MicroModButton buttons;  // Creates an object of a button
+
+IvProtocol protocol;  // Creates an object of a communication protocol to handle data transmission
+
+Adafruit_Image temp_img;  // Creates an object to store an image of the temperature
+Adafruit_Image wind_img;  // Creates an object to store an image of the wind speed
+Adafruit_Image rain_img;  // Creates an object to store an image of the rain gauge
+Adafruit_Image compass_img;  // Creates an object to store an image of the compass
+Adafruit_Image qr_img;  // Creates an object to store an image of a QR code
+
+#define SD_CS SS  // Defines the pin to select the SD card for communication
+SdFat SD;  // Creates an object of the SdFat library to handle the SD card and filesystem
+
+
+bool loadImage(Adafruit_ImageReader& reader, const char* filename, Adafruit_Image& image)
+{
+  ImageReturnCode stat = reader.loadBMP(filename, image);  // Loads a BMP image file from SD card into 'image' variable.
+  if(stat != IMAGE_SUCCESS)  // Checks if image loading was successful.
+  {
+    Serial.println(filename);  // Prints the filename of the image
+    if (stat == IMAGE_ERR_FILE_NOT_FOUND)  // Checks if the image file was not found
+      Serial.println(F("IMAGE_ERR_FILE_NOT_FOUND"));  // Prints an error message if the file was not found
+    else if (stat == IMAGE_ERR_FORMAT)  // Checks if there was an error in the image file format
+      Serial.println(F("IMAGE_ERR_FORMAT"));  // Prints an error message if there was a format error
+    else if (stat == IMAGE_ERR_MALLOC)  // Checks if there was a memory allocation error
+      Serial.println(F("IMAGE_ERR_MALLOC"));  // Prints an error message if there was a memory allocation error
+    return false;  // Returns false to indicate that image loading failed
+ }  
+
+  GFXcanvas16* canvas = (GFXcanvas16*)image.getCanvas();  // Retrieves the canvas associated with the image for drawing
+  canvas->byteSwap();  // Swaps the byte order if necessary for the canvas
+
+  Serial.print(F("Image dimensions: "));  // Prints a message indicating the dimensions of the loaded image
+  Serial.print(temp_img.width());  // Prints the width of the image
+  Serial.write('x');  // Prints the 'x' character as a separator between width and height
+  Serial.println(temp_img.height());  // Prints the height of the image
+  return true;  // Returns true to indicate that image loading was successful
+}  // Closes the loadImage function
+
+void setup()
+{
+  pinMode(SD_CS, INPUT_PULLUP);  // Sets the SD card chip select pin mode to INPUT_PULLUP.
+  
+  delay(200);  // Delays the setup by 200 milliseconds.
+  
+  Serial.begin(9600);  // Initializes serial communication with a baud rate of 9600.
+  Serial1.begin(9600);  // Initializes serial communication on Serial1 with a baud rate of 9600.
+  
+  Wire.begin();  // Initializes I2C communication.
+  
+  delay(100);  // Delays the setup by an additional 100 milliseconds for the serial port to open.
+  
+  buttons.begin();  // Initializes the MicroMod buttons.
+  
+  display.begin(DC_PIN, CS_PIN, PWM_PIN, SPI_PORT, SPI_SPEED);  // Initializes the display with specified pins and SPI settings.
+  display.setInterfacePixelFormat(ILI9341_PXLFMT_16);  // Sets the pixel format of the display interface to 16-bit.
+  defaultColor = display.rgbTo16b( 255, 255, 255 );  // Converts an RGB color value to a 16-bit color value.
+  display.setCurrentWindowColorSequence(&defaultColor);  // Sets the default color for the display window.
+  display.normalDisplayModeOn();  // Sets the display to normal mode.
+  //display.setInversion(true);  // Optional: Sets display inversion.
+  display.clearDisplay();  // Clears the display.
+
+pinMode(SD_CS, OUTPUT); // Set SD card chip select pin as output
+digitalWrite(SD_CS, HIGH); // Ensure SD card is not selected initially
+delay(200); // Wait for 200 milliseconds
+if(!SD.begin(SD_CS, SD_SCK_MHZ(24))) // Try initializing SD card with SPI clock speed of 24 MHz
+{
+  Serial.println(F("SD init failed (first attempt). Trying again...\r\n")); // Print error message if initialization fails
+  for (int i = 0; i < 250; i++) // Loop to give SD card more time to power up
+    delay(1);
+
+  if(!SD.begin(SD_CS, SD_SCK_MHZ(24))) // Try initializing SD card again
+  {
+    Serial.println(F("SD init failed (second attempt).\n\t")); // Print error message if initialization fails again
+    digitalWrite(SD_CS, HIGH); // Ensure SD card is not selected
+    while(1); // Infinite loop to halt further execution if initialization fails
+  } // This section initializes the SD card and retries if it fails
+}
+
+    {
+// Create an Adafruit_ImageReader object, passing the SD card instance as parameter
+Adafruit_ImageReader reader(SD);
+
+// Load image files from SD card using the Adafruit_ImageReader object and store them in respective image objects
+loadImage(reader, "/display_temp.bmp", temp_img); // Load temperature image
+loadImage(reader, "/display_wind.bmp", wind_img); // Load wind image
+loadImage(reader, "/display_rain.bmp", rain_img); // Load rain image
+//loadImage(reader, "/display_humidity.bmp", humid_img); // Load humidity image (commented out)
+loadImage(reader, "/display_compass.bmp", compass_img); // Load compass image
+loadImage(reader, "/qr_128.bmp", qr_img); // Load QR code image
+    }
+  }
+}
+
+namespace util
+{
+  // Template function to return the maximum of two values
+  template<typename T> inline T max(T a, T b) {return a < b ? b : a;}
+  
+  // Template function to return the minimum of two values
+  template<typename T> inline T min(T a, T b) {return a < b ? a : b;}
+  
+  // Template function to clamp a value within a specified range
+  template<typename T> inline T clamp(T x, T a, T b) {return min(max(x, a), b);}
+}
+
+bool show_qr = false; // Boolean variable to control whether to show the QR code image or not
+
+void drawImage(Adafruit_Image& image, int x, int y)
+{
+  GFXcanvas16* canvas = (GFXcanvas16*)image.getCanvas(); // Get the canvas of the image
+  uint16_t* ptr = canvas->getBuffer(); // Get the pixel buffer of the canvas
+  display.fillFromArray(x, y, x + image.width() - 1, y + image.height() - 1, (color_t*)ptr, image.width() * image.height());	// Draw the image on the display
+}
+
+void drawBar(int x, int y, float t, ILI9341_color_16_t color)
+{
+  if (t > 0.f)
+    display.rectangle(x - 1 + 20, y + 35, x - 1 + 20 + int(t * 82), y + 65, true, (color_t)&color); // Draw a filled rectangle representing a bar graph
+}
+
+bool firstLoop = true; // A boolean variable to indicate if it's the first iteration of the loop function.
+void loop()
+{
+  bool clicked = false; // A boolean variable to track if a button click event has occurred.
+  if(buttons.getClickedInterrupt()) // Check if a button click event has been triggered.
+  {
+    uint8_t pressed = buttons.getClicked(); // Retrieve the ID of the button that was clicked.
+    if(pressed & 0x01) // Check if the first button was clicked.
+    {
+      show_qr = !show_qr; // Toggle the variable to show or hide the QR code.
+      clicked = true; // Set the clicked flag to true.
+    }
+    if(pressed & 0x02) // Check if the second button was clicked.
+    {
+      // Currently no action defined for the second button click.
+    }
+  }
+}
+
+   bool stats_changed = protocol.read(Serial1) || firstLoop; // Check if statistics data has changed or if it's the first loop iteration
+  firstLoop = false; // Set firstLoop to false after the first loop iteration
+  if (clicked)
+    display.clearDisplay(); // Clear the display if a button has been clicked
+
+  if (show_qr && clicked) // Check if QR code should be shown and a button has been clicked
+  {
+    drawImage(qr_img, (240 - qr_img.width()) / 2, (320 - qr_img.height()) / 2); // Draw the QR code image at the center of the display
+  }
+  
+// Checks if the QR code is not shown and either the statistics have changed or a button click event has occurred.
+if (!show_qr && (stats_changed || clicked))
+{
+    // Draws the temperature image at coordinates (130, 25).
+    drawImage(temp_img, 130, 25);
+    // Draws the rain image at coordinates (5, 25).
+    drawImage(rain_img, 5, 25);
+    // Draws the compass image at coordinates (5, 190).
+    drawImage(compass_img, 5, 190);
+    // Draws the wind image at coordinates (130, 190).
+    drawImage(wind_img, 130, 190);
+}
+
+// Define a color based on RGB values to be used in the bar chart
+ILI9341_color_16_t color = display.rgbTo16b(190, 190, 190);
+// Draw a bar chart for temperature with specified positions and color
+drawBar(130, 25, (util::clamp(protocol.mTemperature, 10, 40) - 10) / 30.f, color);
+// Draw a bar chart for rain with specified positions and color
+drawBar(5, 25, util::clamp(protocol.mRain, 0, 20) / 20.f, color);
+// Draw a bar chart for wind speed with specified positions and color
+drawBar(130, 190, util::clamp(protocol.mWindSpeed, 0, 30) / 30.f, color);
+  
+float rad = 3.141592f * protocol.mWindDir / 180.f; // Calculate the angle in radians for wind direction
+int x0 = 9 + 107 / 2; // Calculate the starting point x-coordinate for drawing the wind direction arrow
+int y0 = 191 + 124 / 2; // Calculate the starting point y-coordinate for drawing the wind direction arrow
+int x1 = x0 + 45 * cos(rad); // Calculate the ending point x-coordinate for drawing the wind direction arrow
+int y1 = y0 + 45 * sin(rad); // Calculate the ending point y-coordinate for drawing the wind direction arrow
+defaultColor = display.rgbTo16b(240, 40, 40); // Set the color for drawing the wind direction arrow
+display.setCurrentWindowColorSequence(&defaultColor); // Set the current window color sequence to the chosen color
+display.line(x0, y0, x1, y1, 3); // Draw a line representing the wind direction arrow on the display
