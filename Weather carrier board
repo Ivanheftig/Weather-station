@@ -1,0 +1,175 @@
+#include <Wire.h> // Library for I2C communication protocol
+#include <math.h> // Library for mathematical functions
+#include "SparkFunBME280.h" // Library for interfacing with the BME280 environmental sensor
+#include "SparkFun_Weather_Meter_Kit_Arduino_Library.h" // Library for interfacing with the SparkFun Weather Meter Kit
+#include "esp_sleep.h" // Library for managing sleep modes on ESP32 microcontroller
+#include "esp_wifi.h" // Library for managing WiFi connections on ESP32
+#include "AdafruitIO_WiFi.h" // Library for interfacing with Adafruit IO using WiFi
+#include "protocol.h" // Custom protocol header file (presumably for communication)
+
+int windDirectionPin = 35; // Pin for connecting the wind direction sensor
+int windSpeedPin = 14; // Pin for connecting the wind speed sensor
+int rainfallPin = 27; // Pin for connecting the rainfall sensor
+
+// Sensors
+BME280 tempSensor; // Instance of the BME280 temperature sensor
+SFEWeatherMeterKit weatherMeterKit(windDirectionPin, windSpeedPin, rainfallPin); // Instance of SFEWeatherMeterKit with specified pins for wind direction, wind speed, and rainfall gauge
+
+#define uS_TO_S_FACTOR 1000000ULL  /* Conversion factor for micro seconds to seconds */
+#define TIME_TO_SLEEP  600        /* Time ESP32 will go to sleep (in seconds) */
+
+struct WeatherData
+{
+  float mTemperature = 0; // Temperature data member initialized to 0
+  float mHumidity = 0; // Humidity data member initialized to 0
+  float mPressure = 0; // Pressure data member initialized to 0
+  float mAltitude = 0; // Altitude data member initialized to 0
+  float mRain = 0; // Rainfall data member initialized to 0
+  float mWindSpeed = 0; // Wind speed data member initialized to 0
+  float mWindDir = 0; // Wind direction data member initialized to 0
+};
+WeatherData weatherData; // Object of the WeatherData structure
+
+IvProtocol protocol; // Declaration of an object of type IvProtocol representing a protocol entity
+
+RTC_DATA_ATTR int rainCounts = 0; // Declaration of an integer variable to store rainfall counts with RTC data attribute
+
+RTC_DATA_ATTR struct timeval last_timer_time; // Declaration of a struct variable to store the last timer time with RTC data attribute
+
+void send_uart(); // Declaration of a function named send_uart for UART communication
+
+void ada_publish(); // Declaration of a function named ada_publish for publishing data to Adafruit IO
+
+void ada_publish_setup(); // Declaration of a function named ada_publish_setup for setting up Adafruit IO publishing
+
+void read_sensors() // Function to read sensor data
+{
+  weatherData.mTemperature = tempSensor.readTempC(); // Read temperature data from temperature sensor
+  weatherData.mHumidity = tempSensor.readFloatHumidity(); // Read humidity data from temperature sensor
+  weatherData.mPressure = 0.01 * tempSensor.readFloatPressure(); // Read pressure data from temperature sensor and convert to hPa
+  weatherData.mAltitude = tempSensor.readFloatAltitudeMeters(); // Read altitude data from temperature sensor
+  weatherData.mWindSpeed = weatherMeterKit.getWindSpeed(); // Read wind speed data from weather meter kit
+  weatherData.mWindDir = weatherMeterKit.getWindDirection(); // Read wind direction data from weather meter kit
+  SFEWeatherMeterKitCalibrationParams params = weatherMeterKit.getCalibrationParams(); // Get calibration parameters for weather meter kit
+  weatherData.mRain = params.mmPerRainfallCount * rainCounts; // Calculate rainfall data using calibration parameters and rainfall counts
+  rainCounts = 0; // Reset rainfall counts after reading
+}
+
+void handle_wakeup() // Function to handle wakeup events
+{
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause(); // Get the cause of wakeup
+  switch(wakeup_reason)
+  {
+    case ESP_SLEEP_WAKEUP_EXT0: // If wakeup is caused by external interrupt 0
+    {
+      ++rainCounts; // Increment the rainfall count
+      break;
+    }
+
+    case ESP_SLEEP_WAKEUP_TIMER: // If wakeup is caused by timer
+    {
+      esp_wifi_start(); // Start WiFi
+      read_sensors(); // Read sensor data
+      ada_publish(); // Publish data to Adafruit IO
+      send_uart(); // Send data via UART
+      break;
+    }
+  }
+}
+
+void setup_sleep() // Function to set up deep sleep mode
+{
+  struct timeval now; // Declare a variable to store the current time
+  gettimeofday(&now, NULL); // Get the current time
+  int sleep_time_ms = (now.tv_sec - last_timer_time.tv_sec) * 1000 + (now.tv_usec - last_timer_time.tv_usec) / 1000; // Calculate the time elapsed since the last wakeup
+  int time_to_sleep = TIME_TO_SLEEP - sleep_time_ms / 1000; // Calculate the remaining time to sleep
+  if (time_to_sleep <= 0) // If the remaining time to sleep is less than or equal to 0
+  {
+    last_timer_time = now; // Update the last wakeup time to the current time
+    time_to_sleep = TIME_TO_SLEEP; // Set the time to sleep to the predefined value
+  }
+  esp_sleep_enable_timer_wakeup(time_to_sleep * uS_TO_S_FACTOR); // Enable timer wakeup with the calculated sleep time
+  
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_27, 0); // Enable external wakeup from GPIO pin 27
+  esp_wifi_stop(); // Stop WiFi
+  
+  esp_deep_sleep_start(); // Enter deep sleep mode
+}
+
+void setup()
+{
+    Serial.begin(9600); // Initialize Serial communication at 9600 baud rate
+    Serial1.begin(9600); // Initialize Serial1 communication at 9600 baud rate
+
+    Wire.begin(); // Join I2C bus
+    tempSensor.begin(); // Initialize temperature sensor
+    weatherMeterKit.begin(); // Initialize weather meter kit
+
+    ada_publish_setup(); // Set up publishing to Adafruit IO
+}
+
+void loop()
+{
+    handle_wakeup(); // Handle wakeup events
+    setup_sleep(); // Set up deep sleep mode
+}
+
+
+/************************ Adafruit IO Config *******************************/
+// Defines the section for Adafruit IO configuration
+
+// Define Adafruit IO credentials for username and key
+#define IO_USERNAME "YOUR_IO_USERNAME"
+#define IO_KEY "YOUR_IO_KEY"
+
+// Define WiFi credentials for SSID and password
+#define WIFI_SSID "YOUR_WIFI_NAME"
+#define WIFI_PASS "YOUR_WIFI_PASS"
+
+// Create an instance of AdafruitIO_WiFi with the specified credentials
+AdafruitIO_WiFi io(IO_USERNAME, IO_KEY, WIFI_SSID, WIFI_PASS);
+
+// Set up Adafruit IO feeds for various weather parameters
+// Create Adafruit IO feeds for temperature, humidity, pressure, altitude, rain, wind speed, and wind direction
+AdafruitIO_Feed* ada_feed_temp = io.feed("temperature");
+AdafruitIO_Feed* ada_feed_humidity = io.feed("humidity");
+AdafruitIO_Feed* ada_feed_pressure = io.feed("pressure");
+AdafruitIO_Feed* ada_feed_AltitudeMeters = io.feed("altitude");
+AdafruitIO_Feed* ada_feed_rain = io.feed("rain");
+AdafruitIO_Feed* ada_feed_windspeed = io.feed("windspeed");
+AdafruitIO_Feed* ada_feed_winddir = io.feed("winddirection");
+
+void ada_publish_setup()
+{
+  // Establish connection to io.adafruit.com
+  io.connect();
+
+  // Wait until a connection is established
+  while(io.status() < AIO_CONNECTED)
+    delay(500); // Delay for 500 milliseconds
+}
+
+void ada_publish()
+{
+  io.run(); // Execute Adafruit IO tasks
+
+  // Save weather data to respective Adafruit IO feeds
+  ada_feed_temp->save(weatherData.mTemperature);
+  ada_feed_humidity->save(weatherData.mHumidity);
+  ada_feed_pressure->save(weatherData.mPressure);
+  ada_feed_AltitudeMeters->save(weatherData.mAltitude);
+  ada_feed_rain->save(weatherData.mRain);
+  ada_feed_windspeed->save(weatherData.mWindSpeed);
+  ada_feed_winddir->save(weatherData.mWindDir);
+}
+
+void send_uart()
+{
+  protocol.mTemperature = std::round(weatherData.mTemperature);// Round the temperature value and assign it to the protocol's temperature variable
+  protocol.mHumidity = std::round(weatherData.mHumidity); // Round the humidity value and assign it to the protocol's humidity variable
+  protocol.mPressure = std::round(weatherData.mPressure); // Round the pressure value and assign it to the protocol's pressure variable
+  protocol.mRain = std::round(weatherData.mRain); // Round the rainfall value and assign it to the protocol's rainfall variable
+  protocol.mWindSpeed = std::round(weatherData.mWindSpeed); // Round the wind speed value and assign it to the protocol's wind speed variable
+  protocol.mWindDir = std::round(weatherData.mWindDir); // Round the wind direction value and assign it to the protocol's wind direction variable
+  protocol.write(Serial1); // Write the protocol data to Serial1
+}
