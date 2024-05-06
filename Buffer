@@ -1,0 +1,65 @@
+#include <Wire.h>
+#include "ringbuffer.h"
+
+
+void IvRingBuffer::read(HardwareSerial& ser)
+{
+  int avail = ser.available();
+  if (avail <= 0)
+    return;
+  int bytes = std::min(BUF_SIZE - mNum, avail);
+  if (bytes <= 0)
+    return;
+
+  int freeIndex = (mIndex + mNum) & BUF_MOD;
+  if (freeIndex + bytes > BUF_SIZE)
+  {
+      ser.readBytes(mBuf + freeIndex, BUF_SIZE - freeIndex);
+      ser.readBytes(mBuf, freeIndex + bytes - BUF_SIZE);
+  }
+  else
+      ser.readBytes(mBuf + freeIndex, bytes);
+  mNum += bytes;
+}
+
+int IvRingBuffer::find(uint8_t c) const
+{
+  for (int i = 0; i < mNum; i++)
+  {
+    int index = (mIndex + i) & BUF_MOD;
+    if (c == mBuf[index])
+      return index;
+  }
+  return -1;
+}
+
+bool IvRingBuffer::isFull() const
+{
+  return mNum >= BUF_SIZE;
+}
+
+void IvRingBuffer::clear()
+{
+  mIndex = 0;
+  mNum = 0;
+}
+
+int IvRingBuffer::readData(uint8_t* data, int max_data, int i0, int i1)
+{
+  int num = 0;
+  for (int i = 0; i < max_data; i++)
+  {
+    *data++ = mBuf[i0];
+    num++;
+    if (i0 == i1)
+    {
+      mNum -= num;
+      mIndex = (i1 + 1) & BUF_MOD;
+      return num;
+    }
+    i0 = (i0 + 1) & BUF_MOD;
+  }
+  mNum -= num;
+  mIndex = (i1 + 1) & BUF_MOD;
+  return -1;
+}
