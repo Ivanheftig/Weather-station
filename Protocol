@@ -1,0 +1,108 @@
+#include <Wire.h>
+#include "protocol.h"
+
+
+namespace util
+{
+  template<typename T> inline T max(T a, T b) {return a < b ? b : a;}
+  template<typename T> inline T min(T a, T b) {return a < b ? a : b;}
+  template<typename T> inline T clamp(T x, T a, T b) {return min(max(x, a), b);}
+}
+
+
+void IvProtocol::write(HardwareSerial& ser)
+{
+  char buf[32];
+  int num = 0;
+  int itemp = util::clamp<int>(mTemperature, -99, 99);
+  if (itemp >= 0)
+      num = sprintf(buf, "#T %02i¤", itemp);
+  else
+      num = sprintf(buf, "#T-%02i¤", itemp);
+  ser.write(buf, num);
+
+  int ihumidity = util::clamp<int>(mHumidity, 0, 99);
+  num = sprintf(buf, "#H%02i¤", ihumidity);
+  ser.write(buf, num);
+
+  int ipressure = util::clamp<int>(mPressure, 0, 9999);
+  num = sprintf(buf, "#P%04i¤", ipressure);
+  ser.write(buf, num);
+
+  int irain = util::clamp<int>(mRain, 0, 99);
+  num = sprintf(buf, "#R%02i¤", irain);
+  ser.write(buf, num);
+
+  int iwindspeed = util::clamp<int>(mWindSpeed, 0, 99);
+  num = sprintf(buf, "#W%02i¤", iwindspeed);
+  ser.write(buf, num);
+
+  int iwinddir = util::clamp<int>(mWindDir, 0, 359);
+  num = sprintf(buf, "#D%03i¤", iwinddir);
+  ser.write(buf, num);
+
+  ser.flush();
+}
+
+bool IvProtocol::read(HardwareSerial& ser)
+{
+  // Check overflow, empty buffer and serial.
+  if (mBuffer.isFull())
+  {
+    ser.flush();
+    mBuffer.clear();
+    return false;
+  }
+  mBuffer.read(ser);
+
+  // Parse
+  int oldTemp = mTemperature;
+  int oldHumidity = mHumidity;
+  int oldPressure = mPressure;
+  int oldRain = mRain;
+  int oldWindSpeed = mWindSpeed;
+  int oldWindDir = mWindDir;
+
+  uint8_t token[8];
+  while (true)
+  {
+    int i0 = mBuffer.find('#');
+    if (i0 == -1)
+      break;
+    int i1 = mBuffer.find('¤');
+    if (i1 == -1)
+      break;
+
+    int n = mBuffer.readData(token, sizeof(token), i0, i1);
+    if (n == -1)
+      continue;
+
+    if (token[1] == 'T')
+    {
+      mTemperature = (token[3] - '0') * 10 + (token[4] - '0');
+      if (token[2] == '-')
+      mTemperature = -mTemperature;
+    }
+    else if (token[1] == 'H')
+    {
+      mHumidity = (token[2] - '0') * 10 + (token[3] - '0');
+    }
+    else if (token[1] == 'P')
+    {
+      mPressure = (token[2] - '0') * 1000 + (token[3] - '0') * 100 + (token[4] - '0') * 10 +  + (token[5] - '0');
+    }
+    else if (token[1] == 'R')
+    {
+      mRain = (token[2] - '0') * 10 + (token[3] - '0');
+    }
+    else if (token[1] == 'W')
+    {
+      mWindSpeed = (token[2] - '0') * 10 + (token[3] - '0');
+    }
+    else if (token[1] == 'D')
+    {
+      mWindDir = (token[2] - '0') * 100 + (token[3] - '0') * 10 + (token[4] - '0');
+    }
+  }
+  return (oldTemp != mTemperature) || (oldHumidity != mHumidity) || (oldPressure != mPressure) || (oldRain != mRain) || (oldWindSpeed != mWindSpeed) || (oldWindDir != mWindDir);
+}
